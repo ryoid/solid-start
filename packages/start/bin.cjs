@@ -315,6 +315,32 @@ prog
         console.timeEnd(c.blue("solid-start") + c.magenta(" server built in"));
         console.log("");
       },
+      serverlessApiRoute: async (path, route) => {
+        console.log();
+        console.log(c.blue("solid-start") + c.magenta(" building serverless api routes..."));
+        console.time(c.blue("solid-start") + c.magenta(` ${route.id} built in`));
+
+        const entrypoint = join(config.root, Object.values(route.apiPath)[0])
+
+        // const ssrExternal = config?.ssr?.external || [];
+        await vite.build({
+          configFile: config.configFile,
+          root: config.root,
+          build: {
+            ssr: true,
+            outDir: path,
+            rollupOptions: {
+              input: entrypoint,
+              // external: ssrExternal,
+              output: {
+                inlineDynamicImports: true,
+                format: "esm"
+              }
+            }
+          }
+        });
+        console.timeEnd(c.blue("solid-start") + c.magenta(` ${route.id} built in`));
+      },
       client: async path => {
         console.log();
         console.log(c.blue("solid-start") + c.magenta(" building client..."));

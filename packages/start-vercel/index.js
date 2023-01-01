@@ -2,12 +2,12 @@ import common from "@rollup/plugin-commonjs";
 import json from "@rollup/plugin-json";
 import nodeResolve from "@rollup/plugin-node-resolve";
 import { spawn } from "child_process";
-import { copyFileSync, writeFileSync } from "fs";
+import { copyFileSync, renameSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { rollup } from "rollup";
 import { fileURLToPath } from "url";
 
-export default function ({ edge, prerender } = {}) {
+export default function ({ edge, prerender, splitApis } = {}) {
   return {
     name: "vercel",
     async start() {
@@ -84,67 +84,84 @@ export default function ({ edge, prerender } = {}) {
 
       // Generate API function
       const apiRoutes = config.solidOptions.router.getFlattenedApiRoutes()
-      const apiRoutesConfig = apiRoutes.map(route => {
-        return { 
-          src: route.path.split('/')
-            .map(path => 
-              path[0] === ':'
-                ? `(?<${path.slice(1)}>[^/]+)`
-              : path[0] === '*'
-                ? `(?<${path.slice(1)}>.*)` 
-              : path
-            )
-            .join('/'),
-          dest: "/api" 
-        }
-      })
-      if (apiRoutes.length > 0) {
-        let baseEntrypoint = "entry.js";
-        if (edge) baseEntrypoint = "entry-edge.js";
-        copyFileSync(join(__dirname, baseEntrypoint), entrypoint);
+      const apiRoutesConfig = []
+      if (splitApis) {
+        await Promise.all(apiRoutes.map(async route => {
+          const builderOutputDir = join(config.root, ".solid", "serverlessApiRoute", route.id)
+          const builderOutputFile = 
+          Object.values(route.apiPath)[0]
+            .split('/').pop()
+            .replace('ts', 'js')
+            .replace('[', '_')
+            .replace(']', '_')
+          await builder.serverlessApiRoute(builderOutputDir, route);        
+          renameSync(join(builderOutputDir, builderOutputFile), join(builderOutputDir, 'route.js'))
 
-        const bundle = await rollup({
-          // Same as render
-          input: entrypoint,
-          plugins: [
-            json(),
-            nodeResolve({
-              preferBuiltins: true,
-              exportConditions: edge ? ["worker", "solid"] : ["node", "solid"]
-            }),
-            common()
-          ]
-        });
+          const entrypoint = join(builderOutputDir, "index.js")
+          if (edge) {
+            copyFileSync(join(__dirname, "entry-api.js"), entrypoint);
+          } else {
+            copyFileSync(join(__dirname, "entry-api.js"), entrypoint);
+          }
+          const bundle = await rollup({
+            input: entrypoint,
+            plugins: [
+              json(),
+              nodeResolve({
+                preferBuiltins: true,
+                exportConditions: edge ? ["worker", "solid"] : ["node", "solid"]
+              }),
+              common()
+            ]
+          });
+          const apiEntrypoint = "index.js";
+          const apiFuncDir = join(outputDir, "functions", `${route.id}.func`)
+          await bundle.write(
+            edge
+              ? {
+                  format: "esm",
+                  file: join(apiFuncDir, "index.js"),
+                  inlineDynamicImports: true
+                }
+              : {
+                  format: "cjs",
+                  file: join(apiFuncDir, "index.js"),
+                  exports: "auto",
+                  inlineDynamicImports: true
+                }
+          );
+          await bundle.close();
 
-        const apiEntrypoint = "index.js";
-        const apiFuncDir = join(outputDir, "functions/api.func");
-        await bundle.write(
-          edge
+          const apiConfig = edge
             ? {
-                format: "esm",
-                file: join(apiFuncDir, apiEntrypoint),
-                inlineDynamicImports: true
+                runtime: "edge",
+                entrypoint: apiEntrypoint
               }
             : {
-                format: "cjs",
-                file: join(apiFuncDir, apiEntrypoint),
-                exports: "auto",
-                inlineDynamicImports: true
-              }
-        );
-        await bundle.close();
+                runtime: "nodejs18.x",
+                handler: apiEntrypoint,
+                launcherType: "Nodejs"
+              };
+          writeFileSync(join(apiFuncDir, ".vc-config.json"), JSON.stringify(apiConfig, null, 2));
 
-        const apiConfig = edge
-          ? {
-              runtime: "edge",
-              entrypoint: apiEntrypoint
-            }
-          : {
-              runtime: "nodejs16.x",
-              handler: apiEntrypoint,
-              launcherType: "Nodejs"
-            };
-        writeFileSync(join(apiFuncDir, ".vc-config.json"), JSON.stringify(apiConfig, null, 2));
+          const routeMatch = 
+            route.path.split('/')
+              .map(path => 
+                path[0] === ':'
+                  ? `(?<${path.slice(1)}>[^/]+)`
+                : path[0] === '*'
+                  ? `(?<${path.slice(1)}>.*)` 
+                : path
+              )
+              .join('/')
+          apiRoutesConfig.push({ 
+            src: routeMatch,
+            headers: {
+              "x-route-match": routeMatch
+            },
+            dest: route.id
+          })
+        }))
       }
       
       // Routing Config
